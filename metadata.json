@@ -1,0 +1,6 @@
+{
+  "name": "DPBoss Analytics",
+  "description": "Statistical Matka market result storage, mathematically verified 220 Pana reference, live Open-to-Close correlation analyzer, and Top-5 Pana analytics engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

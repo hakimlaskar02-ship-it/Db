@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">DPBoss Analytics</string>
+    <string name="brand_full_title">DPBOSS SMART ANALYTICS</string>
+    <string name="welcome_headline">Welcome to Smart Analytics</string>
+    <string name="empty_state_title">No Historical Data Available</string>
+    <string name="empty_state_subtitle">Import real historical results or run Live Sync to unlock statistical analysis.</string>
+    <string name="action_import_results">IMPORT RESULTS</string>
+    <string name="action_sync_live">Sync Live Results</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_predictions">Predictions</string>
+    <string name="tab_analytics">Analytics</string>
+    <string name="tab_markets">Markets</string>
+    <string name="tab_data">Data</string>
+    <string name="open_to_close_title">LIVE OPEN-TO-CLOSE ANALYSIS</string>
+    <string name="open_pana_hint">Enter Today\'s Open Pana (e.g., 179)</string>
+    <string name="predict_5_close_action">Predict 5 Close Panas</string>
+    <string name="cd_app_logo">DPBoss Smart Analytics logo</string>
+    <string name="cd_back">Navigate back</string>
+    <string name="cd_clear">Clear input</string>
+    <string name="cd_search">Search</string>
+    <string name="cd_settings">App information and methodology</string>
+    <string name="cd_pana_chart">Open 220 Pana Chart</string>
+    <string name="cd_hero_bg">Analytics probability waveforms banner</string>
+</resources>
