@@ -90,6 +90,19 @@ data class FamilyTrendStat(
     val sampleMembers: List<String>
 )
 
+data class SuggestedCloseDigit(
+    val rank: Int,
+    val closeDigit: Int,
+    val confidencePercent: Int, // Strictly calculated from weighted 40/25/20/15 score (0..100)
+    val jodi: String,
+    val matchingClosePanas: List<String>, // 2 matching valid Close Panas for this Close digit
+    val patternReason: String, // Transparent 1-line human-readable reason
+    val correlationScorePct: Int = 0, // 0..40
+    val cutFamilyScorePct: Int = 0,   // 0..25
+    val hotDueScorePct: Int = 0,      // 0..20
+    val jodiPatternScorePct: Int = 0  // 0..15
+)
+
 data class OpenToClosePredictionResult(
     val openPana: String,
     val openAnk: Int,
@@ -101,6 +114,8 @@ data class OpenToClosePredictionResult(
     val familyOpenMatches: Int,
     val openAnkMatches: Int,
     val cutAnkMatches: Int,
+    val isPatternOnlyMode: Boolean = false,
+    val top5CloseDigits: List<SuggestedCloseDigit> = emptyList(), // Top 5 suggested Close single digits (0-9)
     val top5ClosePanas: List<RankedPanaSuggestion>, // Strictly 4 SP + 1 DP ranked by IDX
     val rankedCloseAnks: List<RankedAnkSuggestion>,
     val spClosePanas: List<RankedPanaSuggestion>,
@@ -668,26 +683,57 @@ object MatkaAnalyticsEngine {
             .sortedByDescending { it.dateIso }
 
         val cutAnk = MatkaMathEngine.cutDigit(openInfo.ank)
-        if (completeRecords.isEmpty()) {
-            return OpenToClosePredictionResult(
-                openPana = openInfo.pana,
-                openAnk = openInfo.ank,
-                openCategory = openInfo.category,
-                familyKey = openInfo.familyKey,
-                cutAnk = cutAnk,
-                totalAnalyzedCompleteDraws = 0,
-                exactOpenPanaMatches = 0,
-                familyOpenMatches = 0,
-                openAnkMatches = 0,
-                cutAnkMatches = 0,
-                top5ClosePanas = emptyList(),
-                rankedCloseAnks = emptyList(),
-                spClosePanas = emptyList(),
-                dpClosePanas = emptyList(),
-                note = "No complete historical Open→Close pairs stored for this market yet."
-            )
+        val openFamily = MatkaMathEngine.getFamilyForPana(openInfo.pana)
+        val directCutPana = MatkaMathEngine.directCutPana(openInfo.pana)
+        val directCutPanaAnk = directCutPana?.let { MatkaMathEngine.calculateAnk(it) } ?: cutAnk
+
+        // --- FACTOR 2: Cut / Mirror & Family Logic (25% weight) ---
+        // Standard cut/mirror pairs: 0↔5, 1↔6, 2↔7, 3↔8, 4↔9
+        val openPanaCutDigits = listOf(
+            MatkaMathEngine.cutDigit(openInfo.d1),
+            MatkaMathEngine.cutDigit(openInfo.d2),
+            MatkaMathEngine.cutDigit(openInfo.d3)
+        )
+        val familyAnkCounts = IntArray(10)
+        openFamily?.members?.forEach { m -> familyAnkCounts[m.ank]++ }
+        val maxFamAnkCount = familyAnkCounts.maxOrNull()?.coerceAtLeast(1) ?: 1
+
+        val cutFamilyNorm = DoubleArray(10)
+        val cutFamilyReason = Array(10) { "" }
+        for (c in 0..9) {
+            var score = 0.0
+            val matchedOpenCutCount = openPanaCutDigits.count { it == c }
+            val isDirectOpenCut = (c == cutAnk)
+            val isDirectCutPanaAnk = (c == directCutPanaAnk)
+            val famHits = familyAnkCounts[c]
+
+            if (isDirectOpenCut) {
+                score += 0.65
+            }
+            if (matchedOpenCutCount > 0) {
+                score += if (matchedOpenCutCount >= 2) 0.35 else 0.25
+            }
+            if (isDirectCutPanaAnk) {
+                score += 0.20
+            }
+            if (famHits > 0) {
+                score += 0.20 * safeDiv(famHits.toDouble(), maxFamAnkCount.toDouble())
+            }
+            cutFamilyNorm[c] = score.coerceIn(0.0, 1.0)
+
+            cutFamilyReason[c] = when {
+                isDirectOpenCut -> "Cut digit match (${openInfo.ank}↔$c)"
+                matchedOpenCutCount > 0 -> {
+                    val srcDigit = MatkaMathEngine.cutDigit(c)
+                    "Cut of Open digit $srcDigit ($srcDigit↔$c)"
+                }
+                isDirectCutPanaAnk && directCutPana != null -> "Cut Panna $directCutPana Ank match"
+                famHits > 0 -> "Open family (${openInfo.familyKey}) match"
+                else -> ""
+            }
         }
 
+        // --- Aggregate Real Historical Data (Zero Fake / Zero Random Values) ---
         val exactCloseAnkHits = IntArray(10)
         val familyCloseAnkHits = IntArray(10)
         val ankCloseAnkHits = IntArray(10)
@@ -744,118 +790,286 @@ object MatkaAnalyticsEngine {
             }
         }
 
-        val totalComplete = completeRecords.size.coerceAtLeast(1)
-        val closeAnkGap = IntArray(10) { ank ->
-            completeRecords.indexOfFirst { it.closeAnk == ank }.let { if (it == -1) totalComplete else it }
+        val hasHistory = completeRecords.isNotEmpty()
+        val totalComplete = completeRecords.size
+        val recentWindowRecords = completeRecords.take(30) // Last 15-30 results for Hot/Due & Jodi patterns
+        val recent15Records = completeRecords.take(15)
+
+        // --- FACTOR 1: Historical Open-to-Close Correlation (40% weight) ---
+        val maxAnkCorrHits = ankCloseAnkHits.maxOrNull() ?: 0
+        val maxExactCorrHits = exactCloseAnkHits.maxOrNull() ?: 0
+        val corrNorm = DoubleArray(10)
+        for (c in 0..9) {
+            if (openAnkMatches > 0 && maxAnkCorrHits > 0) {
+                val baseCorr = safeDiv(ankCloseAnkHits[c].toDouble(), maxAnkCorrHits.toDouble())
+                val exactBoost = if (exactMatches > 0 && maxExactCorrHits > 0) {
+                    safeDiv(exactCloseAnkHits[c].toDouble(), maxExactCorrHits.toDouble())
+                } else {
+                    0.0
+                }
+                corrNorm[c] = if (exactMatches > 0 && maxExactCorrHits > 0) {
+                    (0.82 * baseCorr + 0.18 * exactBoost).coerceIn(0.0, 1.0)
+                } else {
+                    baseCorr.coerceIn(0.0, 1.0)
+                }
+            } else {
+                corrNorm[c] = 0.0
+            }
         }
 
-        val ankRawScores = DoubleArray(10)
-        val ankNotes = Array(10) { "" }
-        for (cAnk in 0..9) {
-            val exactRate = safeDiv(exactCloseAnkHits[cAnk].toDouble(), exactMatches.coerceAtLeast(1).toDouble())
-            val famRate = safeDiv(familyCloseAnkHits[cAnk].toDouble(), familyMatches.coerceAtLeast(1).toDouble())
-            val ankRate = safeDiv(ankCloseAnkHits[cAnk].toDouble(), openAnkMatches.coerceAtLeast(1).toDouble())
-            val cutRate = safeDiv(cutAnkCloseAnkHits[cAnk].toDouble(), cutAnkMatches.coerceAtLeast(1).toDouble())
-            val overallRate = safeDiv(overallCloseAnkHits[cAnk].toDouble(), totalComplete.toDouble())
-            val gapNorm = safeDiv(closeAnkGap[cAnk].toDouble(), totalComplete.toDouble())
+        // --- FACTOR 3: Hot & Due (Cold) Trend over last 15-30 draws (20% weight) ---
+        val recent30CloseHits = IntArray(10)
+        val recent15CloseHits = IntArray(10)
+        recentWindowRecords.forEach { rec ->
+            val cAnk = rec.closeAnk ?: rec.closePana?.let { MatkaMathEngine.calculateAnk(it) }
+            if (cAnk != null && cAnk in 0..9) recent30CloseHits[cAnk]++
+        }
+        recent15Records.forEach { rec ->
+            val cAnk = rec.closeAnk ?: rec.closePana?.let { MatkaMathEngine.calculateAnk(it) }
+            if (cAnk != null && cAnk in 0..9) recent15CloseHits[cAnk]++
+        }
+        val closeAnkGap = IntArray(10) { c ->
+            if (!hasHistory) 0
+            else completeRecords.indexOfFirst {
+                (it.closeAnk ?: it.closePana?.let { p -> MatkaMathEngine.calculateAnk(p) }) == c
+            }.let { if (it == -1) totalComplete else it }
+        }
+        val maxRecent30Hits = recent30CloseHits.maxOrNull() ?: 0
+        val maxRecent15Hits = recent15CloseHits.maxOrNull() ?: 0
+        val maxCloseGap = closeAnkGap.maxOrNull() ?: 0
 
-            ankRawScores[cAnk] = 0.28 * exactRate +
-                0.22 * famRate +
-                0.24 * ankRate +
-                0.11 * cutRate +
-                0.10 * overallRate +
-                0.05 * gapNorm
-
-            val parts = mutableListOf<String>()
-            if (exactCloseAnkHits[cAnk] > 0) parts.add("After ${openInfo.pana} ×${exactCloseAnkHits[cAnk]}")
-            if (ankCloseAnkHits[cAnk] > 0) parts.add("After Ank ${openInfo.ank} ×${ankCloseAnkHits[cAnk]}")
-            if (cutAnkCloseAnkHits[cAnk] > 0) parts.add("Cut $cutAnk ×${cutAnkCloseAnkHits[cAnk]}")
-            if (parts.isEmpty()) parts.add("Overall ×${overallCloseAnkHits[cAnk]}")
-            ankNotes[cAnk] = parts.take(2).joinToString(" • ")
+        val hotDueNorm = DoubleArray(10)
+        val isDueDominant = BooleanArray(10)
+        for (c in 0..9) {
+            if (!hasHistory) {
+                hotDueNorm[c] = 0.0
+            } else {
+                val hot30 = if (maxRecent30Hits > 0) safeDiv(recent30CloseHits[c].toDouble(), maxRecent30Hits.toDouble()) else 0.0
+                val hot15 = if (maxRecent15Hits > 0) safeDiv(recent15CloseHits[c].toDouble(), maxRecent15Hits.toDouble()) else 0.0
+                val hotScore = (0.65 * hot30 + 0.35 * hot15).coerceIn(0.0, 1.0)
+                val dueScore = if (closeAnkGap[c] >= 3 && maxCloseGap > 0) {
+                    safeDiv(closeAnkGap[c].toDouble(), maxCloseGap.toDouble()).coerceIn(0.0, 1.0)
+                } else {
+                    0.0
+                }
+                if (dueScore > hotScore) {
+                    hotDueNorm[c] = dueScore
+                    isDueDominant[c] = true
+                } else {
+                    hotDueNorm[c] = hotScore
+                    isDueDominant[c] = false
+                }
+            }
         }
 
-        val maxAnkRaw = ankRawScores.maxOrNull()?.takeIf { it > 0.0 } ?: 1.0
-        val rankedCloseAnks = (0..9)
-            .sortedWith(compareByDescending<Int> { ankRawScores[it] }.thenBy { it })
-            .mapIndexed { idx, cAnk ->
-                val hitCount = ankCloseAnkHits[cAnk].takeIf { openAnkMatches > 0 } ?: overallCloseAnkHits[cAnk]
-                val denom = if (openAnkMatches > 0) openAnkMatches else totalComplete
-                RankedAnkSuggestion(
-                    rank = idx + 1,
-                    ank = cAnk,
-                    historicalHits = hitCount,
-                    hitRatePercent = safeDiv(hitCount * 100.0, denom.toDouble()),
-                    currentGap = closeAnkGap[cAnk],
-                    statisticalScore = clampScore(42.0 + 54.0 * safeDiv(ankRawScores[cAnk], maxAnkRaw)),
-                    supportingNote = ankNotes[cAnk]
-                )
+        // --- FACTOR 4: Jodi Difference & Total Pattern over recent chart (15% weight) ---
+        val jodiTotalFreq = IntArray(10)
+        val jodiDiffFreq = IntArray(10)
+        recentWindowRecords.forEach { rec ->
+            val o = rec.openAnk ?: rec.openPana?.let { MatkaMathEngine.calculateAnk(it) }
+            val cl = rec.closeAnk ?: rec.closePana?.let { MatkaMathEngine.calculateAnk(it) }
+            if (o != null && cl != null && o in 0..9 && cl in 0..9) {
+                jodiTotalFreq[(o + cl) % 10]++
+                jodiDiffFreq[((cl - o) % 10 + 10) % 10]++
+            }
+        }
+        val maxJodiTotalFreq = jodiTotalFreq.maxOrNull() ?: 0
+        val maxJodiDiffFreq = jodiDiffFreq.maxOrNull() ?: 0
+
+        val jodiPatternNorm = DoubleArray(10)
+        for (c in 0..9) {
+            if (!hasHistory) {
+                jodiPatternNorm[c] = 0.0
+            } else {
+                val candTotal = (openInfo.ank + c) % 10
+                val candDiff = ((c - openInfo.ank) % 10 + 10) % 10
+                val totalScore = if (maxJodiTotalFreq > 0) safeDiv(jodiTotalFreq[candTotal].toDouble(), maxJodiTotalFreq.toDouble()) else 0.0
+                val diffScore = if (maxJodiDiffFreq > 0) safeDiv(jodiDiffFreq[candDiff].toDouble(), maxJodiDiffFreq.toDouble()) else 0.0
+                jodiPatternNorm[c] = (0.50 * totalScore + 0.50 * diffScore).coerceIn(0.0, 1.0)
+            }
+        }
+
+        // --- Combine Exact Weighted Score (40% + 25% + 20% + 15% = 100%) ---
+        val weightedTotalPct = DoubleArray(10)
+        val corrPts = IntArray(10)
+        val cutPts = IntArray(10)
+        val hotDuePts = IntArray(10)
+        val jodiPts = IntArray(10)
+        val transparentReasons = Array(10) { "" }
+
+        for (c in 0..9) {
+            val p1 = 40.0 * corrNorm[c]
+            val p2 = 25.0 * cutFamilyNorm[c]
+            val p3 = 20.0 * hotDueNorm[c]
+            val p4 = 15.0 * jodiPatternNorm[c]
+            corrPts[c] = p1.roundToInt()
+            cutPts[c] = p2.roundToInt()
+            hotDuePts[c] = p3.roundToInt()
+            jodiPts[c] = p4.roundToInt()
+            weightedTotalPct[c] = (p1 + p2 + p3 + p4).coerceIn(0.0, 100.0)
+
+            // Build clear, factual 1-line reason strictly from the strongest contributing rule(s)
+            val factorReasons = mutableListOf<Pair<Double, String>>()
+            if (ankCloseAnkHits[c] > 0) {
+                val timesWord = if (ankCloseAnkHits[c] == 1) "once" else "${ankCloseAnkHits[c]} times"
+                factorReasons.add(p1 to "Followed Open ${openInfo.ank} $timesWord in history")
+            }
+            if (cutFamilyReason[c].isNotEmpty()) {
+                factorReasons.add(p2 to cutFamilyReason[c])
+            }
+            if (hasHistory && hotDueNorm[c] > 0.0) {
+                val trendLabel = if (isDueDominant[c]) {
+                    "Due for ${closeAnkGap[c]} draws"
+                } else {
+                    "Hot: appeared ${recent30CloseHits[c]}× in last ${recentWindowRecords.size} draws"
+                }
+                factorReasons.add(p3 to trendLabel)
+            }
+            if (hasHistory && jodiPatternNorm[c] > 0.0) {
+                val candTotal = (openInfo.ank + c) % 10
+                val candDiff = ((c - openInfo.ank) % 10 + 10) % 10
+                val tHits = jodiTotalFreq[candTotal]
+                val dHits = jodiDiffFreq[candDiff]
+                val jodiLabel = if (dHits >= tHits && dHits > 0) {
+                    "Jodi diff +$candDiff hit ${dHits}× recently"
+                } else if (tHits > 0) {
+                    "Jodi total $candTotal hit ${tHits}× recently"
+                } else {
+                    ""
+                }
+                if (jodiLabel.isNotEmpty()) {
+                    factorReasons.add(p4 to jodiLabel)
+                }
             }
 
+            val topReason = factorReasons
+                .sortedByDescending { it.first }
+                .firstOrNull()?.second
+                ?: if (!hasHistory) "Paste chart data to score historical trends" else "Baseline coverage"
+            transparentReasons[c] = topReason
+        }
+
+        // Rank all 10 Close digits strictly by weightedTotalPct descending (deterministic tie-breaks)
+        val sortedDigits = (0..9).sortedWith(
+            compareByDescending<Int> { weightedTotalPct[it] }
+                .thenByDescending { ankCloseAnkHits[it] }
+                .thenByDescending { cutFamilyNorm[it] }
+                .thenByDescending { closeAnkGap[it] }
+                .thenBy { it }
+        )
+
+        val denomAnk = if (openAnkMatches > 0) openAnkMatches else totalComplete.coerceAtLeast(1)
+        val rankedCloseAnks = sortedDigits.mapIndexed { idx, cAnk ->
+            val hitCount = if (openAnkMatches > 0) ankCloseAnkHits[cAnk] else overallCloseAnkHits[cAnk]
+            RankedAnkSuggestion(
+                rank = idx + 1,
+                ank = cAnk,
+                historicalHits = hitCount,
+                hitRatePercent = if (hasHistory) safeDiv(hitCount * 100.0, denomAnk.toDouble()) else 0.0,
+                currentGap = closeAnkGap[cAnk],
+                statisticalScore = weightedTotalPct[cAnk].roundToInt().coerceIn(0, 100),
+                supportingNote = transparentReasons[cAnk]
+            )
+        }
+
+        // --- Score Valid 210 SP & DP Close Panas strictly from real history + weighted Close Ank score ---
         val maxOverallPana = (overallClosePanaHits.values.maxOrNull() ?: 1).coerceAtLeast(1)
         val maxCloseFam = (closeFamilyHits.values.maxOrNull() ?: 1).coerceAtLeast(1)
+        val safeTotal = totalComplete.coerceAtLeast(1)
 
-        // Score all 210 SP & DP Close candidates on the same scale (TP excluded completely)
         val scoredAll = MatkaMathEngine.spAndDpPanas.map { info ->
+            val closeDigitScore = weightedTotalPct[info.ank] / 100.0
             val exactHit = exactClosePanaHits[info.pana] ?: 0
             val famHit = familyClosePanaHits[info.pana] ?: 0
             val ankHit = ankClosePanaHits[info.pana] ?: 0
-            val cutHit = cutClosePanaHits[info.pana] ?: 0
             val overallHit = overallClosePanaHits[info.pana] ?: 0
-            val gap = closePanaLastSeen[info.pana] ?: totalComplete
-            val closeAnkAffinity = safeDiv(ankRawScores[info.ank], maxAnkRaw)
-            val famAffinity = safeDiv((closeFamilyHits[info.familyKey] ?: 0).toDouble(), maxCloseFam.toDouble())
+            val gap = closePanaLastSeen[info.pana] ?: safeTotal
+            val isDirectCut = info.pana == directCutPana
+            val isSameFamily = info.familyKey == openInfo.familyKey
+            val famAffinity = if (hasHistory) safeDiv((closeFamilyHits[info.familyKey] ?: 0).toDouble(), maxCloseFam.toDouble()) else 0.0
 
-            val raw = 0.36 * closeAnkAffinity +
-                0.22 * safeDiv(exactHit.toDouble(), exactMatches.coerceAtLeast(1).toDouble()) +
-                0.14 * safeDiv(famHit.toDouble(), familyMatches.coerceAtLeast(1).toDouble()) +
-                0.14 * safeDiv(ankHit.toDouble(), openAnkMatches.coerceAtLeast(1).toDouble()) +
-                0.06 * safeDiv(cutHit.toDouble(), cutAnkMatches.coerceAtLeast(1).toDouble()) +
-                0.05 * safeDiv(overallHit.toDouble(), maxOverallPana.toDouble()) +
-                0.03 * famAffinity
+            val raw = if (hasHistory) {
+                0.45 * closeDigitScore +
+                    0.20 * safeDiv(exactHit.toDouble(), exactMatches.coerceAtLeast(1).toDouble()) +
+                    0.12 * safeDiv(ankHit.toDouble(), openAnkMatches.coerceAtLeast(1).toDouble()) +
+                    0.09 * safeDiv(famHit.toDouble(), familyMatches.coerceAtLeast(1).toDouble()) +
+                    0.07 * safeDiv(overallHit.toDouble(), maxOverallPana.toDouble()) +
+                    0.04 * famAffinity +
+                    0.03 * (if (isDirectCut) 1.0 else if (isSameFamily) 0.5 else 0.0)
+            } else {
+                0.65 * closeDigitScore +
+                    0.20 * (if (isDirectCut) 1.0 else 0.0) +
+                    0.15 * (if (isSameFamily) 1.0 else 0.0)
+            }
 
             val jodi = "${openInfo.ank}${info.ank}"
-            val reasons = mutableListOf<String>()
-            if (exactHit > 0) reasons.add("Exact ${openInfo.pana}→${info.pana} (×$exactHit)")
-            else if (famHit > 0) reasons.add("Family match ×$famHit")
-            else if (ankHit > 0) reasons.add("Follows Ank ${openInfo.ank} (×$ankHit)")
-            else if (ankCloseAnkHits[info.ank] > 0) reasons.add("Ank ${openInfo.ank}→${info.ank} (×${ankCloseAnkHits[info.ank]})")
-            else if (cutAnkCloseAnkHits[info.ank] > 0) reasons.add("Cut ${cutAnk}→${info.ank} (×${cutAnkCloseAnkHits[info.ank]})")
-            else reasons.add("Close Ank ${info.ank} trend")
+            val reason = when {
+                exactHit > 0 -> "Followed ${openInfo.pana} ${exactHit}× • Jodi $jodi"
+                ankHit > 0 -> "Followed Open ${openInfo.ank} ${ankHit}× • Jodi $jodi"
+                isDirectCut -> "Direct cut of ${openInfo.pana} • Jodi $jodi"
+                famHit > 0 -> "Family match ×$famHit • Jodi $jodi"
+                overallHit > 0 -> "Close hit ×$overallHit • Jodi $jodi"
+                else -> "${transparentReasons[info.ank]} • Jodi $jodi"
+            }
 
-            if (overallHit > 0) reasons.add("Close ×$overallHit")
-            else reasons.add("Gap ${gap}d")
-
-            Triple(info, raw, reasons.take(2).joinToString(" • ") to jodi)
+            Triple(info, raw, reason to jodi)
         }.sortedWith(
             compareByDescending<Triple<PanaInfo, Double, Pair<String, String>>> { it.second }
                 .thenByDescending { overallClosePanaHits[it.first.pana] ?: 0 }
                 .thenBy { it.first.pana }
         )
 
-        val maxScore = scoredAll.firstOrNull()?.second?.takeIf { it > 0.0 } ?: 1.0
         val unifiedRanked = scoredAll.mapIndexed { idx, (info, raw, pair) ->
+            val honestScore = if (hasHistory) {
+                (raw * 100.0).roundToInt().coerceIn(1, 99)
+            } else {
+                // Strictly bounded by Cut/Mirror & Family weight when no historical chart exists
+                weightedTotalPct[info.ank].roundToInt().coerceIn(0, 100)
+            }
             RankedPanaSuggestion(
                 rank = idx + 1,
                 pana = info.pana,
                 category = info.category,
                 ank = info.ank,
                 historicalHits = overallClosePanaHits[info.pana] ?: 0,
-                currentGap = closePanaLastSeen[info.pana] ?: totalComplete,
-                statisticalScore = clampScore(42.0 + 54.0 * safeDiv(raw, maxScore)),
+                currentGap = if (hasHistory) (closePanaLastSeen[info.pana] ?: totalComplete) else 0,
+                statisticalScore = honestScore,
                 reason = pair.first,
                 predictedJodi = pair.second
             )
         }
 
+        // Strict 4 SP + 1 DP quota enforced for Top 5 Close Panas (TP excluded)
         val top5Close = enforceStrict4Sp1DpQuota(unifiedRanked)
         val spClose = unifiedRanked.filter { it.category == PanaCategory.SP }.take(5)
             .mapIndexed { i, s -> s.copy(rank = i + 1) }
         val dpClose = unifiedRanked.filter { it.category == PanaCategory.DP }.take(5)
             .mapIndexed { i, s -> s.copy(rank = i + 1) }
 
-        val summaryNote = buildString {
-            append("Matched $exactMatches exact (${openInfo.pana}), $familyMatches family, ")
-            append("$openAnkMatches Ank ${openInfo.ank}, $cutAnkMatches Cut $cutAnk across $totalComplete complete draws.")
+        // Top 5 Suggested Close Numbers (0-9) with honest weighted % and 2 matching Close Panas each
+        val top5Digits = sortedDigits.take(5).mapIndexed { idx, cAnk ->
+            val matchingPanas = unifiedRanked
+                .filter { it.ank == cAnk }
+                .take(2)
+                .map { it.pana }
+            SuggestedCloseDigit(
+                rank = idx + 1,
+                closeDigit = cAnk,
+                confidencePercent = weightedTotalPct[cAnk].roundToInt().coerceIn(0, 100),
+                jodi = "${openInfo.ank}$cAnk",
+                matchingClosePanas = matchingPanas,
+                patternReason = transparentReasons[cAnk],
+                correlationScorePct = corrPts[cAnk],
+                cutFamilyScorePct = cutPts[cAnk],
+                hotDueScorePct = hotDuePts[cAnk],
+                jodiPatternScorePct = jodiPts[cAnk]
+            )
+        }
+
+        val summaryNote = if (!hasHistory) {
+            "0 historical draws stored — showing Cut/Mirror & Family matches only (25% max). Paste or update chart data to unlock full 100% correlation, Hot/Due & Jodi scoring."
+        } else {
+            "4-Factor Real Data Analysis across $totalComplete draws (Open ${openInfo.ank} seen ${openAnkMatches}× • Recent window: ${recentWindowRecords.size} draws)."
         }
 
         return OpenToClosePredictionResult(
@@ -869,6 +1083,8 @@ object MatkaAnalyticsEngine {
             familyOpenMatches = familyMatches,
             openAnkMatches = openAnkMatches,
             cutAnkMatches = cutAnkMatches,
+            isPatternOnlyMode = !hasHistory,
+            top5CloseDigits = top5Digits,
             top5ClosePanas = top5Close,
             rankedCloseAnks = rankedCloseAnks.take(5),
             spClosePanas = spClose,

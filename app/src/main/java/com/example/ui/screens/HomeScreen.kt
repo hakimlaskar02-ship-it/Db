@@ -61,10 +61,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.domain.analytics.OpenToClosePredictionResult
+import com.example.domain.math.PanaValidationResult
 import com.example.ui.components.AnimatedMetricNumber
 import com.example.ui.components.EmptyAnalyticsState
 import com.example.ui.components.GlassAnalyticsCard
 import com.example.ui.components.LiveMarketStatusBadge
+import com.example.ui.components.OpenToCloseAnalyzerCard
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.DpBossTheme
 import com.example.ui.theme.MonoTextStyles
@@ -79,7 +82,18 @@ import java.util.Locale
 fun HomeScreen(
     stats: DashboardStats,
     marketSummaries: List<MarketCardSummary>,
+    activeMarketName: String,
     isSyncing: Boolean,
+    openPanaInput: String,
+    openPanaValidation: PanaValidationResult?,
+    openToCloseResult: OpenToClosePredictionResult?,
+    onUpdateOpenPanaInput: (String) -> Unit,
+    onApplyCanonicalPana: (String) -> Unit,
+    onAnalyzeClose: () -> Unit,
+    onClearOpenToClose: () -> Unit,
+    onQuickPasteChart: (String, String) -> Unit,
+    onEditHistory: () -> Unit,
+    onInspectPana: (String) -> Unit,
     onSyncLive: () -> Unit,
     onOpenImport: () -> Unit,
     onOpenPredictions: () -> Unit,
@@ -280,7 +294,26 @@ fun HomeScreen(
             }
         }
 
-        // 3. Quick Tools Strip
+        // 3. Open-to-Close Analyzer Card (Open Panna → Top 5 Close Numbers)
+        item {
+            OpenToCloseAnalyzerCard(
+                openPanaInput = openPanaInput,
+                validation = openPanaValidation,
+                result = openToCloseResult,
+                activeMarketLabel = activeMarketName.ifBlank { null },
+                showFullClosePanas = true,
+                onInputChange = onUpdateOpenPanaInput,
+                onApplyCanonical = onApplyCanonicalPana,
+                onAnalyzeClose = onAnalyzeClose,
+                onClear = onClearOpenToClose,
+                onQuickPasteChart = onQuickPasteChart,
+                onEditHistory = onEditHistory,
+                onInspectPana = onInspectPana,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+
+        // 4. Quick Tools Strip
         item {
             Column(
                 modifier = Modifier

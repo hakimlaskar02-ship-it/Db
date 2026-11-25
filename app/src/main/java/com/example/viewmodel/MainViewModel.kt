@@ -300,14 +300,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // 3. Auto-recalculate active Live Open-to-Close prediction whenever new records arrive!
+        // 3. Auto-recalculate active Open-to-Close Analyzer whenever new records or active market change
         viewModelScope.launch {
             combine(activeMarketName, allRecords) { market, records ->
                 market to records
             }.collect { (market, records) ->
                 val currentOpen = _openPanaInput.value.trim()
-                if (market.isNotBlank() && MatkaMathEngine.isValidPana(currentOpen) && _openToCloseResult.value != null) {
-                    val marketRecords = records.filter { it.marketName == market }
+                if (MatkaMathEngine.isValidPana(currentOpen) && _openToCloseResult.value != null) {
+                    val marketRecords = if (market.isNotBlank()) {
+                        records.filter { it.marketName == market }
+                    } else {
+                        records
+                    }
                     _openToCloseResult.value = withContext(Dispatchers.Default) {
                         MatkaAnalyticsEngine.predictOpenToClose(currentOpen, marketRecords)
                     }
@@ -450,6 +454,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearOpenToCloseAnalyzer() {
+        _openPanaInput.value = ""
+        _openPanaValidation.value = null
+        _openToCloseResult.value = null
+    }
+
     fun applyCanonicalSuggestion(canonicalPana: String) {
         updateOpenPanaInput(canonicalPana)
         runOpenToClosePrediction(canonicalPana, activeMarketName.value)
@@ -463,17 +473,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             emitToast(validation.reason, isError = true)
             return
         }
-        val market = activeMarketName.value
-        if (market.isBlank()) {
-            emitToast("Import market history first to run Open-to-Close analysis.", isWarning = true)
-            return
-        }
-        runOpenToClosePrediction(input, market)
+        runOpenToClosePrediction(input, activeMarketName.value)
     }
 
     private fun runOpenToClosePrediction(openPana: String, marketName: String) {
         viewModelScope.launch {
-            val marketRecords = allRecords.value.filter { it.marketName == marketName }
+            val marketRecords = if (marketName.isNotBlank()) {
+                allRecords.value.filter { it.marketName == marketName }
+            } else {
+                allRecords.value
+            }
             val result = withContext(Dispatchers.Default) {
                 MatkaAnalyticsEngine.predictOpenToClose(
                     openPana = openPana,
@@ -622,6 +631,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             _selectedMarket.value = cleanMarket
             emitToast("Saved $cleanMarket ($normalizedDate): $cleanOpen-${jodi ?: "${openAnk}*"}-${cleanClose ?: "***"}")
+        }
+    }
+
+    fun quickPasteAndSaveChart(
+        marketName: String,
+        rawText: String,
+        overwriteConflicts: Boolean = true,
+        onComplete: (savedCount: Int) -> Unit = {}
+    ) {
+        if (rawText.isBlank()) {
+            emitToast("Paste market results (e.g., 10/02/2025 128-16-259) first.", isWarning = true)
+            return
+        }
+        val cleanMarket = marketName.trim().uppercase().ifEmpty {
+            activeMarketName.value.ifEmpty { "KALYAN" }
+        }
+        viewModelScope.launch {
+            val report = withContext(Dispatchers.Default) {
+                repository.previewBulkPaste(rawText, cleanMarket)
+            }
+            if (report.rows.isEmpty()) {
+                emitToast("No valid chart rows found. Try format: 10/02/2025 128-16-259", isWarning = true)
+                onComplete(0)
+                return@launch
+            }
+            val saved = repository.commitParsedImport(
+                rows = report.rows,
+                overwriteConflicts = overwriteConflicts
+            )
+            if (saved > 0) {
+                val targetMarket = report.rows.firstOrNull {
+                    it.status != com.example.data.parser.ParsedRowStatus.INVALID
+                }?.marketName ?: cleanMarket
+                _selectedMarket.value = targetMarket
+                val now = System.currentTimeMillis()
+                _lastSyncEpochMillis.value = now
+                _nowTickMillis.value = now
+                prefs.edit().putLong(KEY_LAST_SYNC_EPOCH, now).apply()
+                emitToast("Updated $saved real chart records for $targetMarket — analyzer refreshed.")
+                onComplete(saved)
+            } else {
+                emitToast(
+                    if (report.invalidCount > 0) "${report.invalidCount} invalid rows skipped. Check Matka digit order."
+                    else "All pasted rows are already up to date in chart.",
+                    isWarning = true
+                )
+                onComplete(0)
+            }
+        }
+    }
+
+    fun updateExistingRecord(
+        original: ResultRecordEntity,
+        newDateIso: String,
+        newOpenPana: String,
+        newClosePana: String?
+    ) {
+        val normalizedDate = DpBossTextParser.normalizeDateToIso(newDateIso)
+        if (normalizedDate == null) {
+            emitToast("Enter a valid date (YYYY-MM-DD or DD/MM/YYYY).", isError = true)
+            return
+        }
+        val cleanOpen = newOpenPana.trim()
+        val cleanClose = newClosePana?.trim()?.takeIf { it.isNotEmpty() }
+        val error = MatkaMathEngine.validateResultConsistency(cleanOpen, null, cleanClose)
+        if (error != null) {
+            emitToast(error, isError = true)
+            return
+        }
+        val openAnk = MatkaMathEngine.calculateAnk(cleanOpen)
+        val closeAnk = cleanClose?.let { MatkaMathEngine.calculateAnk(it) }
+        val jodi = if (openAnk != null && closeAnk != null) "$openAnk$closeAnk" else null
+        val dow = DpBossTextParser.isoDateToDayOfWeek(normalizedDate)
+
+        viewModelScope.launch {
+            if (normalizedDate != original.dateIso) {
+                repository.deleteRecord(original.id)
+            }
+            repository.saveSingleRecord(
+                original.copy(
+                    id = if (normalizedDate == original.dateIso) original.id else 0L,
+                    dateIso = normalizedDate,
+                    dayOfWeek = dow,
+                    openPana = cleanOpen,
+                    openAnk = openAnk,
+                    closePana = cleanClose,
+                    closeAnk = closeAnk,
+                    jodi = jodi,
+                    source = RecordSource.MANUAL.name,
+                    isVerified = cleanClose != null
+                )
+            )
+            emitToast("Updated ${original.marketName} ($normalizedDate): $cleanOpen-${jodi ?: "${openAnk}*"}-${cleanClose ?: "***"}")
         }
     }
 

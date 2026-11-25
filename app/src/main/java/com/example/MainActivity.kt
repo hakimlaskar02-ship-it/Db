@@ -11,19 +11,32 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
@@ -41,11 +54,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.parser.DpBossTextParser
+import com.example.ui.components.AppShareHelper
 import com.example.ui.components.EditMarketScheduleDialog
 import com.example.ui.components.PanaDetailBottomSheet
 import com.example.ui.components.PremiumBottomNavBar
@@ -249,6 +267,11 @@ private fun DpBossAnalyticsApp(
                         TopBrandHeader(
                             autoSyncState = autoSyncState,
                             onToggleAutoSync = viewModel::toggleAutoSync,
+                            onShareApp = {
+                                AppShareHelper.shareApp(context) { toastText ->
+                                    viewModel.notifyToast(toastText)
+                                }
+                            },
                             onOpenPanaChart = viewModel::openPanaChart,
                             onOpenInfo = { showMethodologyDialog = true }
                         )
@@ -269,6 +292,7 @@ private fun DpBossAnalyticsApp(
                                     allRecords = allRecords,
                                     onBack = viewModel::closeSubScreen,
                                     onToggleVerified = viewModel::toggleRecordVerification,
+                                    onUpdateRecord = viewModel::updateExistingRecord,
                                     onDeleteRecord = viewModel::deleteRecord,
                                     onExportCsv = { filter ->
                                         pendingCsvMarketFilter = filter
@@ -290,7 +314,20 @@ private fun DpBossAnalyticsApp(
                                         AppTab.HOME -> HomeScreen(
                                             stats = dashboardStats,
                                             marketSummaries = marketSummaries,
+                                            activeMarketName = activeMarketName,
                                             isSyncing = isSyncing,
+                                            openPanaInput = openPanaInput,
+                                            openPanaValidation = openPanaValidation,
+                                            openToCloseResult = openToCloseResult,
+                                            onUpdateOpenPanaInput = viewModel::updateOpenPanaInput,
+                                            onApplyCanonicalPana = viewModel::applyCanonicalSuggestion,
+                                            onAnalyzeClose = viewModel::triggerOpenToClosePrediction,
+                                            onClearOpenToClose = viewModel::clearOpenToCloseAnalyzer,
+                                            onQuickPasteChart = { market, raw ->
+                                                viewModel.quickPasteAndSaveChart(market, raw)
+                                            },
+                                            onEditHistory = { viewModel.openHistory(activeMarketName.ifBlank { null }) },
+                                            onInspectPana = viewModel::inspectPana,
                                             onSyncLive = viewModel::syncLiveFromDpBoss,
                                             onOpenImport = { viewModel.selectTab(AppTab.DATA) },
                                             onOpenPredictions = { viewModel.selectTab(AppTab.PREDICTIONS) },
@@ -315,6 +352,11 @@ private fun DpBossAnalyticsApp(
                                             onUpdateOpenPanaInput = viewModel::updateOpenPanaInput,
                                             onApplyCanonicalPana = viewModel::applyCanonicalSuggestion,
                                             onPredictOpenToClose = viewModel::triggerOpenToClosePrediction,
+                                            onClearOpenToClose = viewModel::clearOpenToCloseAnalyzer,
+                                            onQuickPasteChart = { market, raw ->
+                                                viewModel.quickPasteAndSaveChart(market, raw)
+                                            },
+                                            onEditHistory = { viewModel.openHistory(activeMarketName.ifBlank { null }) },
                                             onInspectPana = viewModel::inspectPana,
                                             onNavigateToImport = { viewModel.selectTab(AppTab.DATA) }
                                         )
@@ -403,20 +445,79 @@ private fun DpBossAnalyticsApp(
         )
     }
 
-    // Methodology & Matka Rules Info Dialog
+    // App Menu / Profile, Share with Friends & Methodology Dialog
     if (showMethodologyDialog) {
         AlertDialog(
             onDismissRequest = { showMethodologyDialog = false },
             containerColor = colors.navy,
-            title = { Text("DPBoss Smart Analytics Rules", color = colors.textPrimary) },
+            title = { Text("DPBoss Smart Analytics", color = colors.textPrimary) },
             text = {
                 Column {
+                    // Prominent Share with Friends + Copy Link Section
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                showMethodologyDialog = false
+                                AppShareHelper.shareApp(context) { toastText ->
+                                    viewModel.notifyToast(toastText)
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.electricBlue),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("menu_share_with_friends_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Share,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = stringResource(R.string.share_with_friends_action),
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showMethodologyDialog = false
+                                AppShareHelper.copyAppLinkToClipboard(context) { toastText ->
+                                    viewModel.notifyToast(toastText)
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, colors.cyan.copy(alpha = 0.6f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.cyan),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("menu_copy_link_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentCopy,
+                                contentDescription = stringResource(R.string.copy_app_link_action),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(14.dp))
+                    HorizontalDivider(color = colors.borderSubtle)
+                    Spacer(Modifier.height(12.dp))
+
                     Text(
-                        text = "• Strict 4 SP · 1 DP Quota: Both Top 5 Next Game Panas and Open→Close Predictor always select the Top 4 SP + #1 DP ranked by IDX (TP excluded).\n" +
-                            "• Auto-Sync Engine: Automatically syncs dpbosssattamatka.com on app launch and every 15 minutes while active, failing silently if blocked.\n" +
-                            "• Live IST Schedule: Tracks Open/Close timings & weekly off-days in Asia/Kolkata IST and shifts Day-Wise analysis to the next operating day when closed/off.\n" +
-                            "• Matka Math: 1 < 2 < … < 9 < 0, Ank = (d1+d2+d3)%10, Cut Pairs 0↔5, 1↔6, 2↔7, 3↔8, 4↔9.",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "• Open-to-Close Analyzer: Enter any 3-digit Open Panna (e.g. 128) to auto-compute the Open Single Digit and Top 5 Suggested Close Numbers (0–9) with confidence %, Jodi & Close Panna suggestions.\n" +
+                            "• Strict 4 SP · 1 DP Quota: Both Top 5 Next Game Panas and Open→Close Close Panas select the Top 4 SP + #1 DP ranked by IDX (TP excluded).\n" +
+                            "• Auto-Sync Engine: Automatically syncs dpbosssattamatka.com on launch and every 15 minutes while active, failing silently if blocked.\n" +
+                            "• Live IST Schedule: Tracks Open/Close timings & weekly off-days in Asia/Kolkata IST and shifts Day-Wise analysis to the next operating day when closed/off.",
+                        style = MaterialTheme.typography.bodySmall,
                         color = colors.textSecondary
                     )
                     Spacer(Modifier.height(10.dp))

@@ -11,14 +11,21 @@
     <string name="tab_analytics">Analytics</string>
     <string name="tab_markets">Markets</string>
     <string name="tab_data">Data</string>
-    <string name="open_to_close_title">LIVE OPEN-TO-CLOSE ANALYSIS</string>
-    <string name="open_pana_hint">Enter Today\'s Open Pana (e.g., 179)</string>
-    <string name="predict_5_close_action">Predict 5 Close Panas</string>
+    <string name="open_to_close_title">Open-to-Close Analyzer</string>
+    <string name="open_pana_hint">Enter 3-digit Open Panna (e.g., 128)</string>
+    <string name="analyze_close_action">Analyze Close</string>
+    <string name="clear_action">Clear</string>
+    <string name="predict_5_close_action">Analyze Close</string>
+    <string name="share_app_action">Share App</string>
+    <string name="share_with_friends_action">Share with Friends</string>
+    <string name="copy_app_link_action">Copy Link</string>
+    <string name="app_link_copied_toast">App link copied! Paste it to share with friends.</string>
     <string name="cd_app_logo">DPBoss Smart Analytics logo</string>
     <string name="cd_back">Navigate back</string>
     <string name="cd_clear">Clear input</string>
     <string name="cd_search">Search</string>
-    <string name="cd_settings">App information and methodology</string>
+    <string name="cd_settings">App menu, profile, and methodology</string>
+    <string name="cd_share_app">Share DPBoss Smart Analytics</string>
     <string name="cd_pana_chart">Open 220 Pana Chart</string>
     <string name="cd_hero_bg">Analytics probability waveforms banner</string>
 </resources>

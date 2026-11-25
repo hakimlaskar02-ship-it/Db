@@ -22,15 +22,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -51,10 +57,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.local.ResultRecordEntity
 import com.example.data.parser.DpBossTextParser
+import com.example.domain.math.MatkaMathEngine
 import com.example.ui.components.EmptyAnalyticsState
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.DpBossTheme
@@ -82,6 +90,7 @@ fun HistoryScreen(
     allRecords: List<ResultRecordEntity>,
     onBack: () -> Unit,
     onToggleVerified: (ResultRecordEntity) -> Unit,
+    onUpdateRecord: (ResultRecordEntity, String, String, String?) -> Unit,
     onDeleteRecord: (Long) -> Unit,
     onExportCsv: (String?) -> Unit,
     onInspectPana: (String) -> Unit,
@@ -97,6 +106,7 @@ fun HistoryScreen(
     var typeFilter by remember { mutableStateOf(HistoryTypeFilter.ALL) }
     var dateRange by remember { mutableStateOf(DateRangeFilter.ALL) }
     var currentPage by remember { mutableIntStateOf(0) }
+    var editingRecord by remember { mutableStateOf<ResultRecordEntity?>(null) }
     val pageSize = 25
 
     val filtered = remember(allRecords, selectedMarket, searchQuery, sortDescending, typeFilter, dateRange) {
@@ -337,6 +347,17 @@ fun HistoryScreen(
                             }
                         }
 
+                        IconButton(
+                            onClick = { editingRecord = rec },
+                            modifier = Modifier.testTag("history_edit_record_${rec.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Edit,
+                                contentDescription = "Edit record",
+                                tint = colors.cyan,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                         IconButton(onClick = { onToggleVerified(rec) }) {
                             Icon(
                                 imageVector = if (rec.isVerified) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
@@ -405,6 +426,144 @@ fun HistoryScreen(
             }
         }
     }
+
+    editingRecord?.let { rec ->
+        EditHistoricalRecordDialog(
+            record = rec,
+            onDismiss = { editingRecord = null },
+            onSave = { newDate, newOpen, newClose ->
+                onUpdateRecord(rec, newDate, newOpen, newClose)
+                editingRecord = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun EditHistoricalRecordDialog(
+    record: ResultRecordEntity,
+    onDismiss: () -> Unit,
+    onSave: (dateIso: String, openPana: String, closePana: String?) -> Unit
+) {
+    val colors = DpBossTheme.colors
+    var dateInput by remember(record.id) { mutableStateOf(record.dateIso) }
+    var openInput by remember(record.id) { mutableStateOf(record.openPana ?: "") }
+    var closeInput by remember(record.id) { mutableStateOf(record.closePana ?: "") }
+
+    val openAnk = MatkaMathEngine.calculateAnk(openInput.trim())
+    val closeAnk = MatkaMathEngine.calculateAnk(closeInput.trim())
+    val previewJodi = when {
+        openAnk != null && closeAnk != null -> "$openAnk$closeAnk"
+        openAnk != null -> "${openAnk}*"
+        else -> "--"
+    }
+    val validationError = MatkaMathEngine.validateResultConsistency(
+        openPana = openInput.trim().ifEmpty { null },
+        jodi = null,
+        closePana = closeInput.trim().ifEmpty { null }
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.navy,
+        title = {
+            Column {
+                Text("Edit Historical Record", color = colors.textPrimary)
+                Text(record.marketName, style = MaterialTheme.typography.bodySmall, color = colors.cyan)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = dateInput,
+                    onValueChange = { dateInput = it },
+                    label = { Text("Date (YYYY-MM-DD)", color = colors.textSecondary) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = colors.cyan,
+                        unfocusedBorderColor = colors.borderSubtle,
+                        focusedContainerColor = colors.card,
+                        unfocusedContainerColor = colors.card,
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = openInput,
+                        onValueChange = { openInput = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Open Panna", color = colors.textSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = colors.electricBlue,
+                            unfocusedBorderColor = colors.borderSubtle,
+                            focusedContainerColor = colors.card,
+                            unfocusedContainerColor = colors.card,
+                            focusedTextColor = colors.textPrimary,
+                            unfocusedTextColor = colors.textPrimary
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = closeInput,
+                        onValueChange = { closeInput = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Close Panna", color = colors.textSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = colors.cyan,
+                            unfocusedBorderColor = colors.borderSubtle,
+                            focusedContainerColor = colors.card,
+                            unfocusedContainerColor = colors.card,
+                            focusedTextColor = colors.textPrimary,
+                            unfocusedTextColor = colors.textPrimary
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.card)
+                        .border(0.8.dp, colors.borderSubtle, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Auto-Calculated Jodi", style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
+                    StatusPill(label = previewJodi, color = colors.warning)
+                }
+                if (validationError != null && openInput.isNotEmpty()) {
+                    Text(
+                        text = validationError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.danger
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(dateInput, openInput, closeInput.ifBlank { null }) },
+                enabled = validationError == null && openInput.length == 3,
+                colors = ButtonDefaults.buttonColors(containerColor = colors.electricBlue),
+                modifier = Modifier.testTag("save_edited_record_button")
+            ) {
+                Text("Save Record")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        }
+    )
 }
 
 @Composable

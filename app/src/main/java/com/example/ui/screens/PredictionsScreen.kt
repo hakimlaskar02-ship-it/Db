@@ -71,6 +71,7 @@ import com.example.ui.components.EmptyAnalyticsState
 import com.example.ui.components.GlassAnalyticsCard
 import com.example.ui.components.LiveMarketStatusBadge
 import com.example.ui.components.MarketSelectorStrip
+import com.example.ui.components.OpenToCloseAnalyzerCard
 import com.example.ui.components.PanaCategoryBadge
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.DpBossTheme
@@ -95,6 +96,9 @@ fun PredictionsScreen(
     onUpdateOpenPanaInput: (String) -> Unit,
     onApplyCanonicalPana: (String) -> Unit,
     onPredictOpenToClose: () -> Unit,
+    onClearOpenToClose: () -> Unit,
+    onQuickPasteChart: (String, String) -> Unit,
+    onEditHistory: () -> Unit,
     onInspectPana: (String) -> Unit,
     onNavigateToImport: () -> Unit,
     modifier: Modifier = Modifier
@@ -120,10 +124,27 @@ fun PredictionsScreen(
 
         if (snapshot == null || !snapshot.hasData) {
             item {
-                Spacer(Modifier.height(12.dp))
+                OpenToCloseAnalyzerCard(
+                    openPanaInput = openPanaInput,
+                    validation = openPanaValidation,
+                    result = openToCloseResult,
+                    activeMarketLabel = selectedMarket.ifBlank { null },
+                    showFullClosePanas = true,
+                    onInputChange = onUpdateOpenPanaInput,
+                    onApplyCanonical = onApplyCanonicalPana,
+                    onAnalyzeClose = onPredictOpenToClose,
+                    onClear = onClearOpenToClose,
+                    onQuickPasteChart = onQuickPasteChart,
+                    onEditHistory = onEditHistory,
+                    onInspectPana = onInspectPana,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+            item {
+                Spacer(Modifier.height(4.dp))
                 EmptyAnalyticsState(
                     title = "No Historical Data Available",
-                    subtitle = "Import real historical results for a market to unlock strict 4 SP + 1 DP Top-5 scoring and Live Open-to-Close predictions.",
+                    subtitle = "Import real historical results for a market to unlock strict 4 SP + 1 DP Top-5 scoring and historical Open-to-Close correlations.",
                     onPrimaryAction = onNavigateToImport
                 )
             }
@@ -236,15 +257,20 @@ fun PredictionsScreen(
             }
         }
 
-        // 2. LIVE OPEN-TO-CLOSE ANALYSIS (Strict 4 SP + 1 DP)
+        // 2. OPEN-TO-CLOSE ANALYZER (Top 5 Close Numbers + Strict 4 SP · 1 DP Close Panas)
         item {
-            LiveOpenToCloseCard(
+            OpenToCloseAnalyzerCard(
                 openPanaInput = openPanaInput,
                 validation = openPanaValidation,
                 result = openToCloseResult,
+                activeMarketLabel = snapshot.marketName,
+                showFullClosePanas = true,
                 onInputChange = onUpdateOpenPanaInput,
                 onApplyCanonical = onApplyCanonicalPana,
-                onPredict = onPredictOpenToClose,
+                onAnalyzeClose = onPredictOpenToClose,
+                onClear = onClearOpenToClose,
+                onQuickPasteChart = onQuickPasteChart,
+                onEditHistory = onEditHistory,
                 onInspectPana = onInspectPana,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
@@ -374,224 +400,7 @@ fun PredictionsScreen(
     }
 }
 
-@Composable
-private fun LiveOpenToCloseCard(
-    openPanaInput: String,
-    validation: PanaValidationResult?,
-    result: OpenToClosePredictionResult?,
-    onInputChange: (String) -> Unit,
-    onApplyCanonical: (String) -> Unit,
-    onPredict: () -> Unit,
-    onInspectPana: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val colors = DpBossTheme.colors
 
-    GlassAnalyticsCard(
-        glowAccent = colors.cyan,
-        contentPadding = PaddingValues(16.dp),
-        modifier = modifier
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Rounded.Bolt,
-                    contentDescription = null,
-                    tint = colors.cyan,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = stringResource(R.string.open_to_close_title),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = colors.textPrimary
-                )
-            }
-            StatusPill(
-                label = "4 SP · 1 DP",
-                color = colors.cyan,
-                modifier = Modifier.testTag("o2c_quota_badge")
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = openPanaInput,
-            onValueChange = onInputChange,
-            placeholder = {
-                Text(
-                    text = stringResource(R.string.open_pana_hint),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.textMuted
-                )
-            },
-            singleLine = true,
-            textStyle = MonoTextStyles.PanaLarge.copy(color = colors.textPrimary),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Number,
-                imeAction = ImeAction.Done
-            ),
-            keyboardActions = KeyboardActions(onDone = { onPredict() }),
-            trailingIcon = {
-                if (openPanaInput.isNotEmpty()) {
-                    IconButton(onClick = { onInputChange("") }) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = stringResource(R.string.cd_clear),
-                            tint = colors.textSecondary
-                        )
-                    }
-                }
-            },
-            shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = colors.cyan,
-                unfocusedBorderColor = colors.borderSubtle,
-                focusedContainerColor = colors.navy,
-                unfocusedContainerColor = colors.navy,
-                cursorColor = colors.cyan
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("open_pana_input")
-        )
-
-        when (validation) {
-            is PanaValidationResult.Valid -> {
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colors.emeraldSoft)
-                        .border(0.8.dp, colors.emerald.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.CheckCircle,
-                            contentDescription = null,
-                            tint = colors.emerald,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Text(
-                            text = "${validation.info.pana} → Ank ${validation.info.ank} • ${validation.family.sizeTypeLabel}",
-                            style = MonoTextStyles.MetricSmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = colors.emerald
-                        )
-                    }
-                    PanaCategoryBadge(category = validation.info.category)
-                }
-            }
-            is PanaValidationResult.Invalid -> {
-                Spacer(Modifier.height(10.dp))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colors.dangerSoft)
-                        .border(0.8.dp, colors.danger.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.ErrorOutline,
-                            contentDescription = null,
-                            tint = colors.danger,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Text(
-                            text = validation.reason,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.danger
-                        )
-                    }
-                    if (validation.suggestedCanonical != null) {
-                        Spacer(Modifier.height(6.dp))
-                        Surface(
-                            onClick = { onApplyCanonical(validation.suggestedCanonical) },
-                            shape = RoundedCornerShape(8.dp),
-                            color = colors.cardElevated,
-                            border = BorderStroke(1.dp, colors.cyan.copy(alpha = 0.6f))
-                        ) {
-                            Text(
-                                text = "Use valid Matka Pana: ${validation.suggestedCanonical}",
-                                style = MonoTextStyles.MetricSmall,
-                                color = colors.cyan,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
-                }
-            }
-            null -> Unit
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Button(
-            onClick = onPredict,
-            enabled = validation is PanaValidationResult.Valid,
-            shape = RoundedCornerShape(13.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = colors.electricBlue,
-                disabledContainerColor = colors.cardElevated
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .testTag("predict_5_close_button")
-        ) {
-            Text(
-                text = stringResource(R.string.predict_5_close_action),
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = if (validation is PanaValidationResult.Valid) Color.White else colors.textMuted
-            )
-        }
-
-        AnimatedVisibility(
-            visible = result != null,
-            enter = fadeIn() + expandVertically()
-        ) {
-            if (result != null) {
-                Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text(
-                        text = result.note,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.textSecondary
-                    )
-                    Spacer(Modifier.height(10.dp))
-
-                    if (result.top5ClosePanas.isEmpty()) {
-                        Text(
-                            text = "Import complete Open→Close history to generate Close Pana predictions.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.warning
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            result.top5ClosePanas.forEach { closeItem ->
-                                Top5PanaRowCard(
-                                    item = closeItem,
-                                    onClick = { onInspectPana(closeItem.pana) }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun Top5PanaRowCard(

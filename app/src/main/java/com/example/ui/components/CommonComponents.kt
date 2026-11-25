@@ -51,6 +51,7 @@ import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -154,6 +155,7 @@ fun GlassAnalyticsCard(
 fun TopBrandHeader(
     autoSyncState: AutoSyncUiState,
     onToggleAutoSync: (Boolean) -> Unit,
+    onShareApp: () -> Unit,
     onOpenPanaChart: () -> Unit,
     onOpenInfo: () -> Unit,
     modifier: Modifier = Modifier
@@ -203,6 +205,28 @@ fun TopBrandHeader(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            IconButton(
+                onClick = onShareApp,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("header_share_app_button")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.electricBlueSoft)
+                        .border(0.9.dp, colors.electricBlue.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Share,
+                        contentDescription = stringResource(R.string.cd_share_app),
+                        tint = colors.cyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             IconButton(
                 onClick = onOpenPanaChart,

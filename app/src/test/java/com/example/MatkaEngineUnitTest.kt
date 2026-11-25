@@ -161,4 +161,64 @@ class MatkaEngineUnitTest {
         assertFalse(srideviEval.isShiftedToNextActiveDay)
         assertNull(srideviEval.shiftBannerMessage)
     }
+
+    @Test
+    fun `Open-to-Close Analyzer computes exact 4-factor weighted score (40-25-20-15) with zero fake percentages`() {
+        // 1. With 0 historical records, Open Panna 128 -> Open Single Digit = 1, Cut = 6
+        // Honest score MUST be strictly bounded to <= 25% (only Cut/Mirror & Family weight applies)
+        val noHistoryResult = MatkaAnalyticsEngine.predictOpenToClose("128", emptyList())
+        assertNotNull(noHistoryResult)
+        assertTrue(noHistoryResult!!.isPatternOnlyMode)
+        assertEquals(1, noHistoryResult.openAnk)
+        assertEquals(6, noHistoryResult.cutAnk)
+        assertEquals(5, noHistoryResult.top5CloseDigits.size)
+        assertEquals(5, noHistoryResult.top5CloseDigits.map { it.closeDigit }.toSet().size)
+        assertEquals(6, noHistoryResult.top5CloseDigits.first().closeDigit) // Cut of 1 is 6
+        assertTrue(noHistoryResult.top5CloseDigits.all { it.confidencePercent in 0..25 })
+        assertTrue(noHistoryResult.top5CloseDigits.all { it.correlationScorePct == 0 && it.hotDueScorePct == 0 && it.jodiPatternScorePct == 0 })
+        assertEquals(
+            noHistoryResult.top5CloseDigits.map { it.confidencePercent }.sortedDescending(),
+            noHistoryResult.top5CloseDigits.map { it.confidencePercent }
+        )
+        assertTrue(noHistoryResult.top5CloseDigits.all { it.jodi == "1${it.closeDigit}" })
+        assertTrue(noHistoryResult.top5CloseDigits.all { item ->
+            item.matchingClosePanas.size == 2 &&
+                item.matchingClosePanas.all { pana ->
+                    MatkaMathEngine.isValidPana(pana) && MatkaMathEngine.calculateAnk(pana) == item.closeDigit
+                }
+        })
+        // Strict 4 SP + 1 DP quota preserved
+        assertEquals(5, noHistoryResult.top5ClosePanas.size)
+        assertEquals(4, noHistoryResult.top5ClosePanas.count { it.category == PanaCategory.SP })
+        assertEquals(1, noHistoryResult.top5ClosePanas.count { it.category == PanaCategory.DP })
+        assertEquals(0, noHistoryResult.top5ClosePanas.count { it.category == PanaCategory.TP })
+
+        // 2. With real historical chart data: Open 1 followed by Close 6 four times (and Jodi 16 diff +5, total 7)
+        val history = listOf(
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-10", dayOfWeek = 1, openPana = "128", openAnk = 1, closePana = "259", closeAnk = 6, jodi = "16", source = RecordSource.PASTE_IMPORT.name),
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-11", dayOfWeek = 2, openPana = "128", openAnk = 1, closePana = "169", closeAnk = 6, jodi = "16", source = RecordSource.PASTE_IMPORT.name),
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-12", dayOfWeek = 3, openPana = "137", openAnk = 1, closePana = "240", closeAnk = 6, jodi = "16", source = RecordSource.PASTE_IMPORT.name),
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-13", dayOfWeek = 4, openPana = "146", openAnk = 1, closePana = "349", closeAnk = 6, jodi = "16", source = RecordSource.PASTE_IMPORT.name),
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-14", dayOfWeek = 5, openPana = "137", openAnk = 1, closePana = "149", closeAnk = 4, jodi = "14", source = RecordSource.PASTE_IMPORT.name),
+            ResultRecordEntity(marketName = "KALYAN", dateIso = "2025-02-15", dayOfWeek = 6, openPana = "259", openAnk = 6, closePana = "128", closeAnk = 1, jodi = "61", source = RecordSource.PASTE_IMPORT.name)
+        )
+        val histResult = MatkaAnalyticsEngine.predictOpenToClose("128", history)
+        assertNotNull(histResult)
+        assertFalse(histResult!!.isPatternOnlyMode)
+        assertEquals(5, histResult.top5CloseDigits.size)
+
+        val top1 = histResult.top5CloseDigits.first()
+        assertEquals(6, top1.closeDigit)
+        assertEquals("16", top1.jodi)
+        assertEquals(40, top1.correlationScorePct) // Top historical follower gets full 40%
+        assertTrue(top1.cutFamilyScorePct > 0) // Direct cut of 1 is 6
+        assertTrue(top1.hotDueScorePct > 0) // Hot in recent window
+        assertTrue(top1.jodiPatternScorePct > 0) // Top Jodi diff +5 & total 7
+        assertTrue(top1.confidencePercent >= 85)
+        assertTrue(top1.patternReason.contains("4 times"))
+        assertEquals(2, top1.matchingClosePanas.size)
+        // Verify deterministic reproducibility (calling twice produces identical output)
+        val repeatResult = MatkaAnalyticsEngine.predictOpenToClose("128", history)
+        assertEquals(histResult.top5CloseDigits, repeatResult!!.top5CloseDigits)
+    }
 }
